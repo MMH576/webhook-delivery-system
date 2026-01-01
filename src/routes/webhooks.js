@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const signature = require('../utils/signature');
+const { queueWebhook } = require('../services/webhookService');
 
 router.post('/', async (req, res) => {
     try {
@@ -20,6 +21,7 @@ router.post('/', async (req, res) => {
             [target_url, payload, headers || {}, sig, 'pending']
         );
 
+        await queueWebhook(result.rows[0].id);
         res.status(201).json(result.rows[0]);
     } catch (error) {
         console.error('Error creating webhook:', error);
