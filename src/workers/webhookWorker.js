@@ -34,7 +34,7 @@ webhookQueue.process(async (job) => {
         );
 
         await db.query(
-            `UPDATE webhooks SET status = 'delivered', delivered_at = NOW() WHERE id = $1`,
+            `UPDATE webhooks SET status = 'delivered', updated_at = NOW() WHERE id = $1`,
             [webhookId]
         );
 
