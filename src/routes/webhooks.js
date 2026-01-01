@@ -83,6 +83,67 @@ router.get('/', async (req, res) => {
     }
 });
 
+router.get('/stats/overview', async (req, res) => {
+    try {
+        const [statusCounts, dlqCount, attemptStats] = await Promise.all([
+            db.query(`SELECT status, COUNT(*)::int as count FROM webhooks GROUP BY status`),
+            db.query(`SELECT COUNT(*)::int as count FROM dead_letter_queue`),
+            db.query(`SELECT COUNT(*)::int as total, COALESCE(AVG(duration_ms)::int, 0) as avg_duration FROM delivery_attempts`)
+        ]);
+
+        const byStatus = {};
+        let totalWebhooks = 0;
+        statusCounts.rows.forEach(row => {
+            byStatus[row.status] = row.count;
+            totalWebhooks += row.count;
+        });
+
+        res.json({
+            total_webhooks: totalWebhooks,
+            by_status: byStatus,
+            delivery_attempts: {
+                total: attemptStats.rows[0].total,
+                avg_response_time_ms: attemptStats.rows[0].avg_duration
+            },
+            dlq_count: dlqCount.rows[0].count
+        });
+    } catch (error) {
+        console.error('Error fetching stats:', error);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
+
+router.get('/stats/hourly', async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT
+                date_trunc('hour', updated_at) as hour,
+                status,
+                COUNT(*)::int as count
+            FROM webhooks
+            WHERE updated_at > NOW() - INTERVAL '24 hours'
+            GROUP BY date_trunc('hour', updated_at), status
+            ORDER BY hour DESC
+        `);
+
+        const hourlyMap = {};
+        result.rows.forEach(row => {
+            const hourKey = row.hour.toISOString();
+            if (!hourlyMap[hourKey]) {
+                hourlyMap[hourKey] = { hour: hourKey, pending: 0, delivered: 0, failed: 0 };
+            }
+            hourlyMap[hourKey][row.status] = row.count;
+        });
+
+        res.json({
+            hourly_stats: Object.values(hourlyMap)
+        });
+    } catch (error) {
+        console.error('Error fetching hourly stats:', error);
+        res.status(500).json({ error: 'Failed to fetch hourly stats' });
+    }
+});
+
 router.get('/dlq/list', async (req, res) => {
     try {
         const { limit = 50, offset = 0 } = req.query;
