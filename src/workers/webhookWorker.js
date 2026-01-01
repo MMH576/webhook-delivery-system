@@ -3,6 +3,29 @@ const axios = require('axios');
 const db = require('../config/database');
 const { webhookQueue } = require('../services/webhookService');
 
+function isRetryableError(error) {
+    if (!error.response) {
+        return true;
+    }
+    const status = error.response.status;
+    if (status >= 500 && status < 600) {
+        return true;
+    }
+    if (status === 429) {
+        return true;
+    }
+    return false;
+}
+
+async function moveToDLQ(webhookId, reason, finalError) {
+    await db.query(`UPDATE webhooks SET status = 'failed', updated_at = NOW() WHERE id = $1`, [webhookId]);
+    await db.query(
+        `INSERT INTO dead_letter_queue (webhook_id, reason, final_error)
+         VALUES ($1, $2, $3)`,
+        [webhookId, reason, finalError]
+    );
+}
+
 webhookQueue.process(async (job) => {
     const { webhookId } = job.data;
     console.log(`Processing webhook ${webhookId}, attempt ${job.attemptsMade + 1}`);
@@ -52,6 +75,12 @@ webhookQueue.process(async (job) => {
             [webhookId, job.attemptsMade + 1, statusCode, errorBody, error.message, duration]
         );
 
+        if (!isRetryableError(error)) {
+            console.log(`Webhook ${webhookId} failed with non-retryable error (${statusCode}), moving to DLQ`);
+            await moveToDLQ(webhookId, `Non-retryable HTTP ${statusCode} error`, error.message);
+            return { success: false, statusCode, nonRetryable: true };
+        }
+
         console.log(`Webhook ${webhookId} failed: ${error.message}`);
         throw error;
     }
@@ -62,14 +91,7 @@ webhookQueue.on('failed', async (job, err) => {
 
     if (job.attemptsMade >= job.opts.attempts) {
         console.log(`Webhook ${webhookId} exhausted all retries, marking as failed`);
-
-        await db.query(`UPDATE webhooks SET status = 'failed' WHERE id = $1`, [webhookId]);
-
-        await db.query(
-            `INSERT INTO dead_letter_queue (webhook_id, reason, final_error)
-             VALUES ($1, $2, $3)`,
-            [webhookId, 'Exhausted all retry attempts', err.message]
-        );
+        await moveToDLQ(webhookId, 'Exhausted all retry attempts', err.message);
     }
 });
 
