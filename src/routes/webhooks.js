@@ -83,6 +83,65 @@ router.get('/', async (req, res) => {
     }
 });
 
+router.get('/dlq/list', async (req, res) => {
+    try {
+        const { limit = 50, offset = 0 } = req.query;
+
+        const result = await db.query(
+            `SELECT dlq.*, w.target_url, w.payload, w.status as webhook_status
+             FROM dead_letter_queue dlq
+             JOIN webhooks w ON dlq.webhook_id = w.id
+             ORDER BY dlq.moved_at DESC
+             LIMIT $1 OFFSET $2`,
+            [limit, offset]
+        );
+
+        const countResult = await db.query('SELECT COUNT(*) FROM dead_letter_queue');
+
+        res.json({
+            dead_letters: result.rows,
+            total: parseInt(countResult.rows[0].count),
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+        });
+    } catch (error) {
+        console.error('Error listing DLQ:', error);
+        res.status(500).json({ error: 'Failed to list dead letter queue' });
+    }
+});
+
+router.post('/dlq/:id/retry', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const dlqResult = await db.query(
+            'SELECT * FROM dead_letter_queue WHERE id = $1',
+            [id]
+        );
+
+        if (dlqResult.rows.length === 0) {
+            return res.status(404).json({ error: 'DLQ entry not found' });
+        }
+
+        const dlqEntry = dlqResult.rows[0];
+        const webhookId = dlqEntry.webhook_id;
+
+        await db.query(
+            `UPDATE webhooks SET status = 'pending', updated_at = NOW() WHERE id = $1`,
+            [webhookId]
+        );
+
+        await db.query('DELETE FROM dead_letter_queue WHERE id = $1', [id]);
+
+        await queueWebhook(webhookId);
+
+        res.json({ message: 'Webhook re-queued for retry', webhook_id: webhookId });
+    } catch (error) {
+        console.error('Error retrying from DLQ:', error);
+        res.status(500).json({ error: 'Failed to retry webhook' });
+    }
+});
+
 router.get('/:id/attempts', async (req, res) => {
     try {
         const { id } = req.params;
