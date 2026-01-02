@@ -2,86 +2,40 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const signature = require('../utils/signature');
+const logger = require('../utils/logger');
 const { queueWebhook } = require('../services/webhookService');
+const { authMiddleware } = require('../middleware/auth');
+const { apiLimiter } = require('../middleware/rateLimit');
+const { webhookValidation, handleValidationErrors, payloadSizeLimit } = require('../middleware/validate');
 
-router.post('/', async (req, res) => {
-    try {
-        const { target_url, payload, headers } = req.body;
+router.post('/',
+    authMiddleware,
+    apiLimiter,
+    payloadSizeLimit(1024 * 1024),
+    webhookValidation,
+    handleValidationErrors,
+    async (req, res) => {
+        try {
+            const { target_url, payload, headers } = req.body;
+            const sig = signature.generate(payload);
 
-        if (!target_url || !payload) {
-            return res.status(400).json({ error: 'target_url and payload are required' });
+            const result = await db.query(
+                `INSERT INTO webhooks (target_url, payload, headers, signature, status, api_key_id)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 RETURNING id, status, created_at`,
+                [target_url, payload, headers || {}, sig, 'pending', req.apiKeyId]
+            );
+
+            await queueWebhook(result.rows[0].id);
+
+            logger.info({ webhookId: result.rows[0].id, apiKeyId: req.apiKeyId }, 'Webhook created');
+            res.status(201).json(result.rows[0]);
+        } catch (error) {
+            logger.error({ err: error }, 'Error creating webhook');
+            res.status(500).json({ error: 'Failed to create webhook' });
         }
-
-        const sig = signature.generate(payload);
-
-        const result = await db.query(
-            `INSERT INTO webhooks (target_url, payload, headers, signature, status)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING id, status, created_at`,
-            [target_url, payload, headers || {}, sig, 'pending']
-        );
-
-        await queueWebhook(result.rows[0].id);
-        res.status(201).json(result.rows[0]);
-    } catch (error) {
-        console.error('Error creating webhook:', error);
-        res.status(500).json({ error: 'Failed to create webhook' });
     }
-});
-
-router.get('/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-
-        const result = await db.query(
-            `SELECT w.*, COUNT(da.id) as attempts
-             FROM webhooks w
-             LEFT JOIN delivery_attempts da ON w.id = da.webhook_id
-             WHERE w.id = $1
-             GROUP BY w.id`,
-            [id]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Webhook not found' });
-        }
-
-        res.json(result.rows[0]);
-    } catch (error) {
-        console.error('Error fetching webhook:', error);
-        res.status(500).json({ error: 'Failed to fetch webhook' });
-    }
-});
-
-router.get('/', async (req, res) => {
-    try {
-        const { status, limit = 50, offset = 0 } = req.query;
-
-        let query = 'SELECT * FROM webhooks';
-        const params = [];
-
-        if (status) {
-            query += ' WHERE status = $1';
-            params.push(status);
-        }
-
-        query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-        params.push(limit, offset);
-
-        const result = await db.query(query, params);
-        const countResult = await db.query('SELECT COUNT(*) FROM webhooks' + (status ? ' WHERE status = $1' : ''), status ? [status] : []);
-
-        res.json({
-            webhooks: result.rows,
-            total: parseInt(countResult.rows[0].count),
-            limit: parseInt(limit),
-            offset: parseInt(offset)
-        });
-    } catch (error) {
-        console.error('Error listing webhooks:', error);
-        res.status(500).json({ error: 'Failed to list webhooks' });
-    }
-});
+);
 
 router.get('/stats/overview', async (req, res) => {
     try {
@@ -108,7 +62,7 @@ router.get('/stats/overview', async (req, res) => {
             dlq_count: dlqCount.rows[0].count
         });
     } catch (error) {
-        console.error('Error fetching stats:', error);
+        logger.error({ err: error }, 'Error fetching stats');
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
 });
@@ -139,7 +93,7 @@ router.get('/stats/hourly', async (req, res) => {
             hourly_stats: Object.values(hourlyMap)
         });
     } catch (error) {
-        console.error('Error fetching hourly stats:', error);
+        logger.error({ err: error }, 'Error fetching hourly stats');
         res.status(500).json({ error: 'Failed to fetch hourly stats' });
     }
 });
@@ -166,7 +120,7 @@ router.get('/dlq/list', async (req, res) => {
             offset: parseInt(offset)
         });
     } catch (error) {
-        console.error('Error listing DLQ:', error);
+        logger.error({ err: error }, 'Error listing DLQ');
         res.status(500).json({ error: 'Failed to list dead letter queue' });
     }
 });
@@ -196,9 +150,10 @@ router.post('/dlq/:id/retry', async (req, res) => {
 
         await queueWebhook(webhookId);
 
+        logger.info({ dlqId: id, webhookId }, 'Webhook retried from DLQ');
         res.json({ message: 'Webhook re-queued for retry', webhook_id: webhookId });
     } catch (error) {
-        console.error('Error retrying from DLQ:', error);
+        logger.error({ err: error }, 'Error retrying from DLQ');
         res.status(500).json({ error: 'Failed to retry webhook' });
     }
 });
@@ -214,8 +169,62 @@ router.get('/:id/attempts', async (req, res) => {
 
         res.json({ attempts: result.rows });
     } catch (error) {
-        console.error('Error fetching attempts:', error);
+        logger.error({ err: error }, 'Error fetching attempts');
         res.status(500).json({ error: 'Failed to fetch attempts' });
+    }
+});
+
+router.get('/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const result = await db.query(
+            `SELECT w.*, COUNT(da.id) as attempts
+             FROM webhooks w
+             LEFT JOIN delivery_attempts da ON w.id = da.webhook_id
+             WHERE w.id = $1
+             GROUP BY w.id`,
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Webhook not found' });
+        }
+
+        res.json(result.rows[0]);
+    } catch (error) {
+        logger.error({ err: error }, 'Error fetching webhook');
+        res.status(500).json({ error: 'Failed to fetch webhook' });
+    }
+});
+
+router.get('/', async (req, res) => {
+    try {
+        const { status, limit = 50, offset = 0 } = req.query;
+
+        let query = 'SELECT * FROM webhooks';
+        const params = [];
+
+        if (status) {
+            query += ' WHERE status = $1';
+            params.push(status);
+        }
+
+        query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        params.push(limit, offset);
+
+        const result = await db.query(query, params);
+        const countResult = await db.query('SELECT COUNT(*) FROM webhooks' + (status ? ' WHERE status = $1' : ''), status ? [status] : []);
+
+        res.json({
+            webhooks: result.rows,
+            total: parseInt(countResult.rows[0].count),
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+        });
+    } catch (error) {
+        logger.error({ err: error }, 'Error listing webhooks');
+        res.status(500).json({ error: 'Failed to list webhooks' });
     }
 });
 
