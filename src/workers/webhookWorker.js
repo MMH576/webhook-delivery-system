@@ -1,6 +1,7 @@
 require('dotenv').config();
 const axios = require('axios');
 const db = require('../config/database');
+const logger = require('../utils/logger');
 const { webhookQueue } = require('../services/webhookService');
 
 function isRetryableError(error) {
@@ -24,11 +25,12 @@ async function moveToDLQ(webhookId, reason, finalError) {
          VALUES ($1, $2, $3)`,
         [webhookId, reason, finalError]
     );
+    logger.info({ webhookId, reason }, 'Webhook moved to DLQ');
 }
 
 webhookQueue.process(async (job) => {
     const { webhookId } = job.data;
-    console.log(`Processing webhook ${webhookId}, attempt ${job.attemptsMade + 1}`);
+    logger.info({ webhookId, attempt: job.attemptsMade + 1 }, 'Processing webhook');
 
     const result = await db.query('SELECT * FROM webhooks WHERE id = $1', [webhookId]);
     if (result.rows.length === 0) {
@@ -61,7 +63,7 @@ webhookQueue.process(async (job) => {
             [webhookId]
         );
 
-        console.log(`Webhook ${webhookId} delivered successfully`);
+        logger.info({ webhookId, status: response.status, duration }, 'Webhook delivered');
         return { success: true, statusCode: response.status };
 
     } catch (error) {
@@ -76,12 +78,12 @@ webhookQueue.process(async (job) => {
         );
 
         if (!isRetryableError(error)) {
-            console.log(`Webhook ${webhookId} failed with non-retryable error (${statusCode}), moving to DLQ`);
+            logger.warn({ webhookId, statusCode }, 'Non-retryable error, moving to DLQ');
             await moveToDLQ(webhookId, `Non-retryable HTTP ${statusCode} error`, error.message);
             return { success: false, statusCode, nonRetryable: true };
         }
 
-        console.log(`Webhook ${webhookId} failed: ${error.message}`);
+        logger.warn({ webhookId, error: error.message }, 'Webhook delivery failed, will retry');
         throw error;
     }
 });
@@ -90,13 +92,34 @@ webhookQueue.on('failed', async (job, err) => {
     const { webhookId } = job.data;
 
     if (job.attemptsMade >= job.opts.attempts) {
-        console.log(`Webhook ${webhookId} exhausted all retries, marking as failed`);
+        logger.error({ webhookId, attempts: job.attemptsMade }, 'Exhausted all retries');
         await moveToDLQ(webhookId, 'Exhausted all retry attempts', err.message);
     }
 });
 
 webhookQueue.on('completed', (job) => {
-    console.log(`Job ${job.id} completed`);
+    logger.debug({ jobId: job.id }, 'Job completed');
 });
 
-console.log('Webhook worker started, waiting for jobs...');
+logger.info('Webhook worker started');
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    logger.info({ signal }, 'Worker shutdown initiated');
+
+    await webhookQueue.close();
+    logger.info('Queue closed');
+
+    await db.pool.end();
+    logger.info('Database pool closed');
+
+    logger.info('Worker shutdown complete');
+    process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
