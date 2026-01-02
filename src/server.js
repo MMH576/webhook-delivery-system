@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const db = require('./config/database');
 const redis = require('./config/redis');
 const { getQueueStats } = require('./services/webhookService');
@@ -11,10 +12,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-
-app.get('/', (req, res) => {
-    res.json({ message: 'Webhook Delivery System API', endpoints: ['/health', '/api/webhooks'] });
-});
+app.use(express.static(path.join(__dirname, '../public')));
 
 app.get('/health', async (req, res) => {
     const health = { status: 'ok', database: 'connected', redis: 'connected', queue: null };
@@ -38,5 +36,9 @@ app.get('/health', async (req, res) => {
 });
 
 app.use('/api/webhooks', webhookRoutes);
+
+app.get('/{*splat}', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+});
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
