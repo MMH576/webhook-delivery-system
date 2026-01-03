@@ -1,0 +1,51 @@
+services:
+  # API Server
+  - type: web
+    name: webhook-api
+    env: node
+    buildCommand: npm ci
+    startCommand: node src/server.js
+    healthCheckPath: /health/live
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: webhook-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: webhook-redis
+          property: connectionString
+      - key: WEBHOOK_SECRET
+        generateValue: true
+
+  # Background Worker
+  - type: worker
+    name: webhook-worker
+    env: node
+    buildCommand: npm ci
+    startCommand: node src/workers/webhookWorker.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: webhook-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: webhook-redis
+          property: connectionString
+      - key: WEBHOOK_SECRET
+        sync: false
+
+databases:
+  - name: webhook-db
+    plan: starter
+
+redis:
+  - name: webhook-redis
+    plan: starter
