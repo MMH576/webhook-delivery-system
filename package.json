@@ -1,15 +1,24 @@
 {
   "name": "webhook-delivery-system",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "dev": "nodemon src/server.js",
     "worker": "node src/workers/webhookWorker.js",
+    "worker:dev": "nodemon src/workers/webhookWorker.js",
     "start": "node src/server.js",
+    "start:prod": "NODE_ENV=production node src/server.js",
+    "migrate": "node -e \"require('fs').readFileSync('migrations/001_initial.sql','utf8').split(';').forEach(s=>s.trim()&&console.log(s))\"",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
     "test:unit": "jest --testPathPattern=unit",
-    "test:integration": "jest --testPathPattern=integration"
+    "test:integration": "jest --testPathPattern=integration",
+    "docker:build": "docker build -t webhook-delivery-system .",
+    "docker:up": "docker-compose -f docker-compose.prod.yml up -d",
+    "docker:down": "docker-compose -f docker-compose.prod.yml down"
   },
   "keywords": [],
   "author": "",
