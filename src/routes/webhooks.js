@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const signature = require('../utils/signature');
 const logger = require('../utils/logger');
-const { queueWebhook } = require('../services/webhookService');
+const { queueWebhook, queueWebhookDemo } = require('../services/webhookService');
 const { authMiddleware } = require('../middleware/auth');
 const { apiLimiter } = require('../middleware/rateLimit');
 const { webhookValidation, handleValidationErrors, payloadSizeLimit } = require('../middleware/validate');
@@ -294,6 +294,108 @@ router.delete('/demo/clear', async (req, res) => {
     } catch (error) {
         logger.error({ err: error }, 'Error clearing demo data');
         res.status(500).json({ error: 'Failed to clear demo data' });
+    }
+});
+
+// ============ STEP-BY-STEP GUIDED DEMO ENDPOINTS ============
+
+// Step 1: Create webhooks in pending state (NOT queued yet)
+router.post('/demo/step/create', async (req, res) => {
+    try {
+        const webhooksToCreate = [
+            {
+                target_url: 'https://httpbin.org/post',
+                payload: { event: 'user.signup', user_id: 'usr_' + Date.now(), email: 'john@example.com' }
+            },
+            {
+                target_url: 'https://httpbin.org/post',
+                payload: { event: 'order.created', order_id: 'ord_' + Date.now(), total: 149.99 }
+            },
+            {
+                target_url: 'https://httpbin.org/post',
+                payload: { event: 'payment.success', payment_id: 'pay_' + Date.now(), amount: 149.99 }
+            }
+        ];
+
+        const createdIds = [];
+
+        for (const webhook of webhooksToCreate) {
+            const sig = signature.generate(webhook.payload);
+            const result = await db.query(
+                `INSERT INTO webhooks (target_url, payload, headers, signature, status)
+                 VALUES ($1, $2, $3, $4, 'pending')
+                 RETURNING id, target_url, payload, status, created_at`,
+                [webhook.target_url, webhook.payload, {}, sig]
+            );
+            createdIds.push(result.rows[0]);
+        }
+
+        logger.info({ count: createdIds.length }, 'Demo step: webhooks created (pending)');
+        res.status(201).json({
+            message: 'Webhooks created in pending state',
+            webhooks: createdIds
+        });
+    } catch (error) {
+        logger.error({ err: error }, 'Error in demo step create');
+        res.status(500).json({ error: 'Failed to create demo webhooks' });
+    }
+});
+
+// Step 2: Process specific webhooks (queue them for delivery)
+router.post('/demo/step/process', async (req, res) => {
+    try {
+        const { webhookIds } = req.body;
+
+        if (!webhookIds || !Array.isArray(webhookIds) || webhookIds.length === 0) {
+            return res.status(400).json({ error: 'webhookIds array is required' });
+        }
+
+        const processed = [];
+        for (const id of webhookIds) {
+            await queueWebhook(id);
+            processed.push(id);
+        }
+
+        logger.info({ webhookIds: processed }, 'Demo step: webhooks queued for processing');
+        res.json({
+            message: 'Webhooks queued for processing',
+            queued: processed
+        });
+    } catch (error) {
+        logger.error({ err: error }, 'Error in demo step process');
+        res.status(500).json({ error: 'Failed to process webhooks' });
+    }
+});
+
+// Step 3: Create a failing webhook (for DLQ demonstration)
+router.post('/demo/step/fail', async (req, res) => {
+    try {
+        const failingWebhook = {
+            target_url: 'https://httpbin.org/status/503',
+            payload: { event: 'sync.data', sync_id: 'sync_' + Date.now(), source: 'legacy_system' }
+        };
+
+        const sig = signature.generate(failingWebhook.payload);
+        const result = await db.query(
+            `INSERT INTO webhooks (target_url, payload, headers, signature, status)
+             VALUES ($1, $2, $3, $4, 'pending')
+             RETURNING id, target_url, payload, status, created_at`,
+            [failingWebhook.target_url, failingWebhook.payload, {}, sig]
+        );
+
+        const webhookId = result.rows[0].id;
+
+        // Queue with demo settings (faster retries for visibility)
+        await queueWebhookDemo(webhookId);
+
+        logger.info({ webhookId }, 'Demo step: failing webhook created and queued');
+        res.status(201).json({
+            message: 'Failing webhook created - watch it retry and move to DLQ',
+            webhook: result.rows[0]
+        });
+    } catch (error) {
+        logger.error({ err: error }, 'Error in demo step fail');
+        res.status(500).json({ error: 'Failed to create failing webhook' });
     }
 });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import StatsCard from './components/StatsCard';
 import Tabs from './components/Tabs';
@@ -8,6 +8,8 @@ import LoadingSpinner from './components/LoadingSpinner';
 import Toast from './components/Toast';
 import { useToast } from './hooks/useToast';
 import WebhookDetailModal from './components/WebhookDetailModal';
+import DemoWizard from './components/DemoWizard';
+import { useDemoMode } from './hooks/useDemoMode';
 
 function App() {
   const [stats, setStats] = useState(null);
@@ -19,6 +21,8 @@ function App() {
   const { toast, showToast, dismissToast } = useToast();
   const [selectedWebhook, setSelectedWebhook] = useState(null);
   const [demoLoading, setDemoLoading] = useState(false);
+  const [createdDemoWebhooks, setCreatedDemoWebhooks] = useState([]);
+  const [wizardLoading, setWizardLoading] = useState(false);
 
   const handleOpenModal = (webhook) => {
     setSelectedWebhook(webhook);
@@ -28,7 +32,7 @@ function App() {
     setSelectedWebhook(null);
   };
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [statsRes, webhooksRes, dlqRes] = await Promise.all([
         fetch('/api/webhooks/stats/overview'),
@@ -43,13 +47,27 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  const {
+    isDemoMode,
+    demoStep,
+    demoWebhookIds,
+    startDemoMode,
+    exitDemoMode,
+    nextStep,
+    addDemoWebhookIds,
+    clearDemoWebhookIds,
+  } = useDemoMode(fetchData);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    // Only use slow polling when not in demo mode (demo mode has its own fast polling)
+    if (!isDemoMode) {
+      const interval = setInterval(fetchData, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchData, isDemoMode]);
 
   const retryWebhook = async (dlqId) => {
     setRetryingIds((prev) => [...prev, dlqId]);
@@ -96,6 +114,91 @@ function App() {
     }
   };
 
+  // Wizard action handlers
+  const handleStartGuidedDemo = async () => {
+    // Clear existing data first
+    setDemoLoading(true);
+    try {
+      await fetch('/api/webhooks/demo/clear', { method: 'DELETE' });
+      await fetchData();
+      setCreatedDemoWebhooks([]);
+      clearDemoWebhookIds();
+      startDemoMode();
+    } catch (err) {
+      showToast('Failed to start demo', 'error');
+    } finally {
+      setDemoLoading(false);
+    }
+  };
+
+  const handleCreateWebhooks = async () => {
+    setWizardLoading(true);
+    try {
+      const res = await fetch('/api/webhooks/demo/step/create', { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to create webhooks');
+      const data = await res.json();
+      setCreatedDemoWebhooks(data.webhooks);
+      addDemoWebhookIds(data.webhooks.map((w) => w.id));
+      await fetchData();
+    } catch (err) {
+      showToast(err.message || 'Failed to create webhooks', 'error');
+    } finally {
+      setWizardLoading(false);
+    }
+  };
+
+  const handleProcessWebhooks = async () => {
+    setWizardLoading(true);
+    try {
+      const webhookIds = createdDemoWebhooks.map((w) => w.id);
+      const res = await fetch('/api/webhooks/demo/step/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhookIds }),
+      });
+      if (!res.ok) throw new Error('Failed to process webhooks');
+      showToast('Webhooks queued! Watch them turn green...', 'success');
+      // Wait a moment then move to next step
+      setTimeout(() => {
+        nextStep();
+      }, 3000);
+    } catch (err) {
+      showToast(err.message || 'Failed to process webhooks', 'error');
+    } finally {
+      setWizardLoading(false);
+    }
+  };
+
+  const handleSimulateFailure = async () => {
+    setWizardLoading(true);
+    try {
+      const res = await fetch('/api/webhooks/demo/step/fail', { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to create failing webhook');
+      const data = await res.json();
+      addDemoWebhookIds([data.webhook.id]);
+      showToast('Failing webhook created! Watch it retry...', 'success');
+      // Wait for retries and DLQ, then advance
+      setTimeout(() => {
+        nextStep();
+      }, 6000);
+    } catch (err) {
+      showToast(err.message || 'Failed to simulate failure', 'error');
+    } finally {
+      setWizardLoading(false);
+    }
+  };
+
+  const handleCloseWizard = () => {
+    exitDemoMode();
+    setCreatedDemoWebhooks([]);
+  };
+
+  const handleViewDlq = () => {
+    exitDemoMode();
+    setCreatedDemoWebhooks([]);
+    setActiveTab('dlq');
+  };
+
   if (loading) {
     return <LoadingSpinner />;
   }
@@ -113,23 +216,30 @@ function App() {
               <h2 className="text-xl font-bold mb-1">Welcome to Webhook Delivery System</h2>
               <p className="text-blue-100 text-sm">
                 A production-ready webhook service with automatic retries, dead letter queue, and real-time monitoring.
-                Click &quot;Run Demo&quot; to see it in action!
+                Click &quot;Guided Demo&quot; to see it in action!
               </p>
             </div>
             <div className="flex gap-3">
               <button
-                onClick={runDemo}
+                onClick={handleStartGuidedDemo}
                 disabled={demoLoading}
                 className="px-5 py-2.5 bg-white text-blue-600 font-semibold rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-md"
               >
-                {demoLoading ? 'Loading...' : 'Run Demo'}
+                {demoLoading ? 'Loading...' : 'Guided Demo'}
+              </button>
+              <button
+                onClick={runDemo}
+                disabled={demoLoading}
+                className="px-5 py-2.5 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Quick Demo
               </button>
               <button
                 onClick={clearDemo}
                 disabled={demoLoading}
-                className="px-5 py-2.5 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-5 py-2.5 bg-blue-700 text-white font-semibold rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Clear Data
+                Clear
               </button>
             </div>
           </div>
@@ -161,10 +271,30 @@ function App() {
 
         <Tabs activeTab={activeTab} setActiveTab={setActiveTab} dlqCount={dlq.length} />
 
-        {activeTab === 'overview' && <WebhooksTable webhooks={webhooks} onRowClick={handleOpenModal} />}
+        {activeTab === 'overview' && (
+          <WebhooksTable
+            webhooks={webhooks}
+            onRowClick={handleOpenModal}
+            highlightIds={demoWebhookIds}
+          />
+        )}
         {activeTab === 'dlq' && <DlqTable dlq={dlq} retryWebhook={retryWebhook} retryingIds={retryingIds} onRowClick={handleOpenModal} />}
       </main>
+
       <WebhookDetailModal webhook={selectedWebhook} onClose={handleCloseModal} />
+
+      <DemoWizard
+        isOpen={isDemoMode}
+        currentStep={demoStep}
+        onClose={handleCloseWizard}
+        onNextStep={nextStep}
+        onCreateWebhooks={handleCreateWebhooks}
+        onProcessWebhooks={handleProcessWebhooks}
+        onSimulateFailure={handleSimulateFailure}
+        onViewDlq={handleViewDlq}
+        createdWebhooks={createdDemoWebhooks}
+        isLoading={wizardLoading}
+      />
     </div>
   );
 }

@@ -21,6 +21,23 @@ async function queueWebhook(webhookId) {
     return job;
 }
 
+// Demo mode queue with faster retry settings (for visible failures in ~5 seconds)
+async function queueWebhookDemo(webhookId) {
+    const job = await webhookQueue.add(
+        { webhookId },
+        {
+            jobId: `webhook-demo-${webhookId}`,
+            attempts: 2,
+            backoff: {
+                type: 'fixed',
+                delay: 1500
+            }
+        }
+    );
+    console.log(`Queued demo webhook ${webhookId} as job ${job.id}`);
+    return job;
+}
+
 async function getQueueStats() {
     const [waiting, active, completed, failed] = await Promise.all([
         webhookQueue.getWaitingCount(),
@@ -31,4 +48,4 @@ async function getQueueStats() {
     return { waiting, active, completed, failed };
 }
 
-module.exports = { webhookQueue, queueWebhook, getQueueStats };
+module.exports = { webhookQueue, queueWebhook, queueWebhookDemo, getQueueStats };

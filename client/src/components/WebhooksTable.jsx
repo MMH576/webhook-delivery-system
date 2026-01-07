@@ -2,7 +2,9 @@ import StatusBadge from './StatusBadge';
 import EmptyState from './EmptyState';
 import { formatRelativeTime } from '../utils/time';
 
-const WebhooksTable = ({ webhooks, onRowClick }) => {
+const WebhooksTable = ({ webhooks, onRowClick, highlightIds = [] }) => {
+  const isHighlighted = (id) => highlightIds.includes(id);
+
   return (
     <div className="bg-white shadow rounded-lg overflow-hidden">
       <table className="min-w-full divide-y divide-gray-200">
@@ -17,7 +19,15 @@ const WebhooksTable = ({ webhooks, onRowClick }) => {
         <tbody className="bg-white divide-y divide-gray-200">
           {webhooks.length > 0 ? (
             webhooks.map((webhook) => (
-              <tr key={webhook.id} onClick={() => onRowClick(webhook)} className="hover:bg-gray-50 transition-colors duration-200 cursor-pointer">
+              <tr
+                key={webhook.id}
+                onClick={() => onRowClick(webhook)}
+                className={`hover:bg-gray-50 transition-all duration-300 cursor-pointer ${
+                  isHighlighted(webhook.id)
+                    ? 'bg-blue-50 ring-2 ring-blue-400 ring-inset animate-pulse'
+                    : ''
+                }`}
+              >
                 <td className="px-6 py-4 text-sm font-mono text-gray-500">{webhook.id.slice(0, 8)}...</td>
                 <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">{webhook.target_url}</td>
                 <td className="px-6 py-4">
