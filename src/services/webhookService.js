@@ -1,7 +1,25 @@
 const Queue = require('bull');
 require('dotenv').config();
 
-const webhookQueue = new Queue('webhook-delivery', process.env.REDIS_URL || 'redis://localhost:6379', {
+// Redis options for Bull queue - maxRetriesPerRequest: null is required for Bull
+const redisOptions = {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+    retryStrategy: (times) => {
+        if (times > 10) {
+            console.error('Bull Redis: Max retry attempts reached');
+            return null;
+        }
+        return Math.min(times * 200, 2000);
+    }
+};
+
+const webhookQueue = new Queue('webhook-delivery', {
+    redis: process.env.REDIS_URL || 'redis://localhost:6379',
+    settings: {
+        stalledInterval: 30000,
+        maxStalledCount: 2
+    },
     defaultJobOptions: {
         attempts: 5,
         backoff: {
@@ -10,10 +28,14 @@ const webhookQueue = new Queue('webhook-delivery', process.env.REDIS_URL || 'red
         },
         removeOnComplete: 100,
         removeOnFail: 1000
+    },
+    createClient: (type) => {
+        const Redis = require('ioredis');
+        return new Redis(process.env.REDIS_URL || 'redis://localhost:6379', redisOptions);
     }
 });
 
-webhookQueue.on('error', (err) => console.error('Queue error:', err));
+webhookQueue.on('error', (err) => console.error('Queue error:', err.message));
 
 async function queueWebhook(webhookId) {
     const job = await webhookQueue.add({ webhookId }, { jobId: `webhook-${webhookId}` });
