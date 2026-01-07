@@ -3,6 +3,7 @@ services:
   - type: web
     name: webhook-api
     env: node
+    plan: free
     buildCommand: npm ci && npm run build --if-present
     startCommand: node scripts/migrate.js && node src/server.js
     healthCheckPath: /health/live
@@ -14,10 +15,7 @@ services:
           name: webhook-db
           property: connectionString
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: webhook-redis
-          property: connectionString
+        sync: false  # You'll add this manually from Upstash
       - key: WEBHOOK_SECRET
         generateValue: true
 
@@ -25,6 +23,7 @@ services:
   - type: worker
     name: webhook-worker
     env: node
+    plan: free
     buildCommand: npm ci
     startCommand: node src/workers/webhookWorker.js
     envVars:
@@ -35,23 +34,13 @@ services:
           name: webhook-db
           property: connectionString
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: webhook-redis
-          property: connectionString
+        sync: false  # You'll add this manually from Upstash
       - key: WEBHOOK_SECRET
         fromService:
           type: web
           name: webhook-api
           envVarKey: WEBHOOK_SECRET
 
-  # Redis Instance
-  - type: redis
-    name: webhook-redis
-    plan: starter
-    maxmemoryPolicy: noeviction
-    ipAllowList: []  # Allow only internal Render services
-
 databases:
   - name: webhook-db
-    plan: starter
+    plan: free
