@@ -3,8 +3,8 @@ services:
   - type: web
     name: webhook-api
     env: node
-    buildCommand: npm ci
-    startCommand: node src/server.js
+    buildCommand: npm ci && npm run build --if-present
+    startCommand: node scripts/migrate.js && node src/server.js
     healthCheckPath: /health/live
     envVars:
       - key: NODE_ENV
@@ -45,10 +45,12 @@ services:
           name: webhook-api
           envVarKey: WEBHOOK_SECRET
 
+  # Redis Instance
+  - type: redis
+    name: webhook-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+
 databases:
   - name: webhook-db
-    plan: starter
-
-redis:
-  - name: webhook-redis
     plan: starter
