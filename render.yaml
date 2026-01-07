@@ -50,6 +50,7 @@ services:
     name: webhook-redis
     plan: starter
     maxmemoryPolicy: noeviction
+    ipAllowList: []  # Allow only internal Render services
 
 databases:
   - name: webhook-db
