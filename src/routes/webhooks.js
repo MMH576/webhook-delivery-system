@@ -198,6 +198,105 @@ router.get('/:id', async (req, res) => {
     }
 });
 
+// Demo endpoint - creates sample webhooks to showcase the system
+router.post('/demo/run', async (req, res) => {
+    try {
+        const demoWebhooks = [
+            {
+                target_url: 'https://webhook.site/demo-success',
+                payload: { event: 'user.created', user_id: 'usr_' + Date.now(), email: 'demo@example.com' },
+                status: 'delivered'
+            },
+            {
+                target_url: 'https://webhook.site/demo-success-2',
+                payload: { event: 'order.completed', order_id: 'ord_' + Date.now(), amount: 99.99 },
+                status: 'delivered'
+            },
+            {
+                target_url: 'https://webhook.site/demo-success-3',
+                payload: { event: 'payment.received', payment_id: 'pay_' + Date.now(), currency: 'USD' },
+                status: 'delivered'
+            },
+            {
+                target_url: 'https://invalid-endpoint.example/webhook',
+                payload: { event: 'test.failure', test_id: 'test_' + Date.now() },
+                status: 'failed'
+            },
+            {
+                target_url: 'https://timeout-server.example/slow',
+                payload: { event: 'sync.timeout', sync_id: 'sync_' + Date.now() },
+                status: 'failed'
+            }
+        ];
+
+        const createdWebhooks = [];
+
+        for (const webhook of demoWebhooks) {
+            const sig = signature.generate(webhook.payload);
+            const result = await db.query(
+                `INSERT INTO webhooks (target_url, payload, headers, signature, status)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING id, status, created_at`,
+                [webhook.target_url, webhook.payload, {}, sig, webhook.status]
+            );
+
+            const webhookId = result.rows[0].id;
+            createdWebhooks.push(result.rows[0]);
+
+            // Create realistic delivery attempts
+            if (webhook.status === 'delivered') {
+                await db.query(
+                    `INSERT INTO delivery_attempts (webhook_id, attempt_number, response_status, response_body, duration_ms)
+                     VALUES ($1, 1, 200, '{"received": true}', $2)`,
+                    [webhookId, Math.floor(Math.random() * 300) + 50]
+                );
+            } else if (webhook.status === 'failed') {
+                // Create multiple failed attempts to show retry behavior
+                const delays = [100, 200, 400, 800, 1600];
+                for (let i = 1; i <= 5; i++) {
+                    await db.query(
+                        `INSERT INTO delivery_attempts (webhook_id, attempt_number, response_status, error_message, duration_ms)
+                         VALUES ($1, $2, $3, $4, $5)`,
+                        [webhookId, i, i <= 3 ? 503 : null, i <= 3 ? 'Service Unavailable' : 'Connection timeout', delays[i-1]]
+                    );
+                }
+                // Move to DLQ
+                await db.query(
+                    `INSERT INTO dead_letter_queue (webhook_id, reason, final_error)
+                     VALUES ($1, 'Exhausted all retry attempts', 'Connection timeout after 5 attempts')`,
+                    [webhookId]
+                );
+            }
+        }
+
+        logger.info({ count: createdWebhooks.length }, 'Demo webhooks created');
+        res.status(201).json({
+            message: 'Demo data created successfully!',
+            webhooks_created: createdWebhooks.length,
+            delivered: demoWebhooks.filter(w => w.status === 'delivered').length,
+            failed: demoWebhooks.filter(w => w.status === 'failed').length
+        });
+    } catch (error) {
+        logger.error({ err: error }, 'Error creating demo data');
+        res.status(500).json({ error: 'Failed to create demo data' });
+    }
+});
+
+// Clear demo data
+router.delete('/demo/clear', async (req, res) => {
+    try {
+        await db.query('DELETE FROM dead_letter_queue');
+        await db.query('DELETE FROM delivery_attempts');
+        await db.query('DELETE FROM webhooks');
+
+        logger.info('Demo data cleared');
+        res.json({ message: 'All demo data cleared successfully' });
+    } catch (error) {
+        logger.error({ err: error }, 'Error clearing demo data');
+        res.status(500).json({ error: 'Failed to clear demo data' });
+    }
+});
+
 router.get('/', async (req, res) => {
     try {
         const { status, limit = 50, offset = 0 } = req.query;

@@ -18,6 +18,7 @@ function App() {
   const [retryingIds, setRetryingIds] = useState([]);
   const { toast, showToast, dismissToast } = useToast();
   const [selectedWebhook, setSelectedWebhook] = useState(null);
+  const [demoLoading, setDemoLoading] = useState(false);
 
   const handleOpenModal = (webhook) => {
     setSelectedWebhook(webhook);
@@ -67,6 +68,34 @@ function App() {
     }
   };
 
+  const runDemo = async () => {
+    setDemoLoading(true);
+    try {
+      const res = await fetch('/api/webhooks/demo/run', { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to create demo data');
+      await fetchData();
+      showToast('Demo webhooks created! Click on any row to see details.', 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to run demo', 'error');
+    } finally {
+      setDemoLoading(false);
+    }
+  };
+
+  const clearDemo = async () => {
+    setDemoLoading(true);
+    try {
+      const res = await fetch('/api/webhooks/demo/clear', { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to clear demo data');
+      await fetchData();
+      showToast('All data cleared!', 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to clear data', 'error');
+    } finally {
+      setDemoLoading(false);
+    }
+  };
+
   if (loading) {
     return <LoadingSpinner />;
   }
@@ -77,6 +106,35 @@ function App() {
       <Header />
 
       <main className="max-w-7xl mx-auto px-4 py-8 pt-20">
+        {/* Demo Banner */}
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg shadow-lg p-6 mb-8 text-white">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold mb-1">Welcome to Webhook Delivery System</h2>
+              <p className="text-blue-100 text-sm">
+                A production-ready webhook service with automatic retries, dead letter queue, and real-time monitoring.
+                Click &quot;Run Demo&quot; to see it in action!
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={runDemo}
+                disabled={demoLoading}
+                className="px-5 py-2.5 bg-white text-blue-600 font-semibold rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-md"
+              >
+                {demoLoading ? 'Loading...' : 'Run Demo'}
+              </button>
+              <button
+                onClick={clearDemo}
+                disabled={demoLoading}
+                className="px-5 py-2.5 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Clear Data
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <StatsCard title="Total Webhooks" value={stats?.total_webhooks || 0} />
           <StatsCard
