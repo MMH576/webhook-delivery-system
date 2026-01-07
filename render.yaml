@@ -40,7 +40,10 @@ services:
           name: webhook-redis
           property: connectionString
       - key: WEBHOOK_SECRET
-        sync: false
+        fromService:
+          type: web
+          name: webhook-api
+          envVarKey: WEBHOOK_SECRET
 
 databases:
   - name: webhook-db
