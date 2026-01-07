@@ -103,23 +103,26 @@ webhookQueue.on('completed', (job) => {
 
 logger.info('Webhook worker started');
 
-let isShuttingDown = false;
+// Only add shutdown handlers if running standalone (not imported by server.js)
+if (require.main === module) {
+    let isShuttingDown = false;
 
-async function gracefulShutdown(signal) {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
+    async function gracefulShutdown(signal) {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
 
-    logger.info({ signal }, 'Worker shutdown initiated');
+        logger.info({ signal }, 'Worker shutdown initiated');
 
-    await webhookQueue.close();
-    logger.info('Queue closed');
+        await webhookQueue.close();
+        logger.info('Queue closed');
 
-    await db.pool.end();
-    logger.info('Database pool closed');
+        await db.pool.end();
+        logger.info('Database pool closed');
 
-    logger.info('Worker shutdown complete');
-    process.exit(0);
+        logger.info('Worker shutdown complete');
+        process.exit(0);
+    }
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
-
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));

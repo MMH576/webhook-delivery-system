@@ -6,6 +6,9 @@ const db = require('./config/database');
 const redis = require('./config/redis');
 const logger = require('./utils/logger');
 
+// Start the worker in the same process (for free tier hosting)
+require('./workers/webhookWorker');
+
 const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, '../public')));
@@ -14,7 +17,7 @@ app.get('/{*splat}', (req, res) => {
 });
 
 const server = app.listen(PORT, () => {
-    logger.info({ port: PORT }, 'Server started');
+    logger.info({ port: PORT }, 'Server started with integrated worker');
 });
 
 let isShuttingDown = false;
