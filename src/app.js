@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
 
 const app = express();
 
@@ -80,12 +79,5 @@ app.get('/health', async (req, res) => {
 
 app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/keys', require('./routes/apiKeys'));
-
-if (process.env.NODE_ENV !== 'test') {
-    app.use(express.static(path.join(__dirname, '../public')));
-    app.get('/{*splat}', (req, res) => {
-        res.sendFile(path.join(__dirname, '../public/index.html'));
-    });
-}
 
 module.exports = app;
